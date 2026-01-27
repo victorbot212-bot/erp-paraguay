@@ -189,44 +189,25 @@ class SifenService:
             
             return result
         
-        # Real SIFEN call
+        # Real SIFEN call using SOAP client
         try:
-            # Build SOAP envelope
-            soap_envelope = self._build_soap_envelope(invoice.xml_signed)
+            from .soap_client import get_soap_client
             
-            response = httpx.post(
-                f"{self.api_url}/de/ws/sync/recibe.wsdl",
-                content=soap_envelope,
-                headers={
-                    "Content-Type": "application/soap+xml; charset=utf-8",
-                },
-                timeout=30.0,
-            )
+            client = get_soap_client()
+            response = client.send_de(invoice.xml_signed)
             
-            response_code, response_message = self._parse_response(response.text)
-            
-            success = response_code == "0"
-            
-            invoice.status = "approved" if success else "rejected"
-            invoice.sifen_response_code = response_code
-            invoice.sifen_response_message = response_message
+            invoice.status = "approved" if response.success else "rejected"
+            invoice.sifen_response_code = response.response_code
+            invoice.sifen_response_message = response.response_message
+            if response.data and response.data.get("processing_id"):
+                invoice.sifen_batch_id = response.data["processing_id"]
             invoice.save()
             
-            # Log
-            SifenLog.objects.create(
-                action="send",
-                cdc=invoice.cdc,
-                request_xml=invoice.xml_signed[:1000],
-                response_xml=response.text[:2000],
-                response_code=response_code,
-                response_message=response_message,
-                duration_ms=int((time.time() - start_time) * 1000),
-            )
-            
             return {
-                "success": success,
-                "response_code": response_code,
-                "response_message": response_message,
+                "success": response.success,
+                "response_code": response.response_code,
+                "response_message": response.response_message,
+                "duration_ms": response.duration_ms,
             }
             
         except Exception as e:
@@ -238,7 +219,7 @@ class SifenService:
             SifenLog.objects.create(
                 action="send",
                 cdc=invoice.cdc,
-                request_xml=invoice.xml_signed[:1000],
+                request_xml=invoice.xml_signed[:1000] if invoice.xml_signed else "",
                 response_code="ERROR",
                 response_message=str(e),
                 duration_ms=int((time.time() - start_time) * 1000),
